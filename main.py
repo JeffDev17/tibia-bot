@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 # Configurações globais
 BATTLE_REGION = (0, 0, 177, 201)
 LOOT_REGION = (768, 361, 208, 208)
+COLOR_MANA =  (0, 63, 140)
+POSITION_MANA = (878, 32)
+COLOR_GREEN_HEALTH = (100, 145, 4)
+POSITION_HEALTH = (195, 35)
+
 
 LOOT_IMG = 'C:/Users/JeffDev/Documents/projects/tibia-bot/imgs/loot_wasp.png'
 EMPTY_BATTLE_IMG = 'C:/Users/JeffDev/Documents/projects/tibia-bot/imgs/empty_battle3.png'
@@ -50,16 +55,23 @@ def attack():
 
 def get_loot():
     try:
-        loot_locations = pyautogui.locateAllOnScreen(LOOT_IMG, confidence=0.9)
+        loot_locations = pyautogui.locateAllOnScreen(LOOT_IMG, confidence=0.86 )
         for location in loot_locations:
             x, y = pyautogui.center(location)
             pyautogui.moveTo(x, y, duration=0.2)
             pyautogui.click(button="right")
-            logger.info("Loot coletado!")
+            logger.info("Loot collected successfully!")
             break
     except Exception:
         return None
-        
+    
+def check_status(name, delay, x, y, rgb, button_name):
+    #print(f"Checking {name}...")
+    pyautogui.sleep(delay) 
+    if pyautogui.pixelMatchesColor(x, y, rgb):
+        pyautogui.press(button_name)
+
+    
 def stop_bot():
     """Para o bot"""
     global running
@@ -85,11 +97,13 @@ def run_bot():
             
             if not is_attacking:
                 attack()
-            
+                check_status('Health', 1, *POSITION_HEALTH, COLOR_GREEN_HEALTH, 'F3')
+                
         else:
             empty_count += 1
             if empty_count >= 5:
                 logger.info("Battle list vazia, aguardando monstros...")
+                check_status('Mana', 5, *POSITION_MANA, COLOR_MANA, 'F3')
                 empty_count = 0
         
         time.sleep(0.2)
