@@ -1,120 +1,191 @@
-
+import cv2
+import numpy as np
 import pyautogui
 import time
+from constants import *
+import actions
+import json
 import keyboard
 import logging
-import sys
+from typing import Optional, Tuple
 
 # Configuração do logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Configurações globais
-BATTLE_REGION = (0, 0, 177, 201)
-LOOT_REGION = (768, 361, 208, 208)
-COLOR_MANA =  (0, 63, 140)
-POSITION_MANA = (878, 32)
-COLOR_GREEN_HEALTH = (100, 145, 4)
-POSITION_HEALTH = (195, 35)
-
-
-LOOT_IMG = 'C:/Users/JeffDev/Documents/projects/tibia-bot/imgs/loot_wasp.png'
-EMPTY_BATTLE_IMG = 'C:/Users/JeffDev/Documents/projects/tibia-bot/imgs/empty_battle3.png'
-ATTACKING_IMG = 'C:/Users/JeffDev/Documents/projects/tibia-bot/imgs/attacking6.png'
-#LOOT_IMG = 'C:/Users/JeffDev/Documents/projects/tibia-bot/imgs/loot_area.png'
-last_attack = time.time()
-attack_cooldown = 5
-running = True
-
-def check_battle():
-    """Verifica se tem monstros na battle list"""
+def load_template(path: str) -> Optional[np.ndarray]:
+    """Load and prepare an image template for matching."""
     try:
-        is_empty = pyautogui.locateOnScreen(EMPTY_BATTLE_IMG, region=BATTLE_REGION, confidence=0.9)
-        return is_empty is not None
-    except:
-        return False
-
-def check_attack():
-    """Verifica se está atacando"""
-    try:
-        return pyautogui.locateOnScreen(ATTACKING_IMG, region=BATTLE_REGION, confidence=0.8)
-    except:
+        template = cv2.imread(path)
+        if template is None:
+            logger.error(f"Erro ao carregar template: {path}")
+            return None
+        return cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    except Exception as e:
+        logger.error(f"Erro ao processar template: {str(e)}")
         return None
 
-def attack():
-    """Ataca um monstro"""
-    global last_attack  #global p poder modificar a variavel
-    current_time = time.time()
-    if current_time - last_attack >= attack_cooldown:
-        pyautogui.press('space')
-        last_attack = current_time
-        logger.info("Atacando...")
-
-def get_loot():
+def find_on_screen(template_path: str, region: Tuple[int, int, int, int], threshold: float = 0.9) -> Optional[Tuple[int, int]]:
+    """
+    Find template image on screen using OpenCV.
+    Returns center coordinates if found, None otherwise.
+    """
     try:
-        loot_locations = pyautogui.locateAllOnScreen(LOOT_IMG, confidence=0.86 )
-        for location in loot_locations:
-            x, y = pyautogui.center(location)
-            pyautogui.moveTo(x, y, duration=0.2)
-            pyautogui.click(button="right")
-            logger.info("Loot collected successfully!")
-            break
-    except Exception:
+        # Capture screen region
+        screenshot = pyautogui.screenshot(region=region)
+        screenshot = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
+        
+        # Load and check template
+        template = load_template(template_path)
+        if template is None:
+            return None
+        
+        # Perform template matching
+        result = cv2.matchTemplate(screenshot, template, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+        
+        if max_val >= threshold:
+            # Calculate center position
+            template_h, template_w = template.shape
+            center_x = max_loc[0] + template_w // 2 + region[0]
+            center_y = max_loc[1] + template_h // 2 + region[1]
+            return (center_x, center_y)
+        
         return None
-    
-def check_status(name, delay, x, y, rgb, button_name):
-    #print(f"Checking {name}...")
-    pyautogui.sleep(delay) 
-    if pyautogui.pixelMatchesColor(x, y, rgb):
-        pyautogui.press(button_name)
+    except Exception as e:
+        logger.error(f"Erro na detecção: {str(e)}")
+        return None
 
+def check_battle_status() -> bool:
+    """
+    Check battle status and handle combat.
+    Continuously searches for and attacks monsters until none are found.
+    Returns True if any attack was executed, False if no monsters were found.
+    """
+    MAX_EMPTY_CHECKS = 3  # Número de verificações vazias consecutivas para confirmar que não há mais monstros
+    SCAN_DELAY = 3  # Delay entre verificações
     
-def stop_bot():
-    """Para o bot"""
-    global running
-    running = False
-    logger.info("Encerrando bot...")
+    try:
+        empty_checks = 0  # Contador de verificações sem encontrar monstros
+        monster_found = False  # Flag para indicar se algum monstro foi encontrado durante todo o processo
+        
+        while empty_checks < MAX_EMPTY_CHECKS:
+            # Verifica se há monstro no slot de batalha
+            empty_battle = find_on_screen(EMPTY_BATTLE_IMG, BATTLE_REGION)
+            
+            if not empty_battle:  # Slot não está vazio (possível monstro presente)
+                # Reseta o contador de verificações vazias já que encontramos algo
+                empty_checks = 0
+                
+                # Inicia ataque
+                logger.info("Monstro detectado - Iniciando ataque!")
+                pyautogui.press('space')
+                monster_found = True
+                time.sleep(SCAN_DELAY)
+                
+            else:
+                empty_checks += 1
+                logger.debug(f"Nenhum monstro detectado (verificação vazia {empty_checks}/{MAX_EMPTY_CHECKS})")
+                time.sleep(SCAN_DELAY)
+        
+        if monster_found:
+            logger.info("Finalizado ciclo de ataques - Todos os monstros foram atacados")
+        else:
+            logger.info("Nenhum monstro encontrado na área")
+            
+        return monster_found
+            
+    except Exception as e:
+        logger.error(f"Erro ao verificar status de batalha: {str(e)}")
+        return False 
+
+def go_to_flag(path, wait): 
+    try: 
+        flag = pyautogui.locateOnScreen(path, confidence=0.8, region=MAP_REGION) 
+        
+        if flag: x, y = pyautogui.center(flag) 
+        pyautogui.moveTo(x, y) 
+        pyautogui.click() 
+        pyautogui.sleep(wait) 
+       
+    except: return None 
+    
+def check_player_position(): 
+    try: pyautogui.locateOnScreen(PLAYER_IMG, confidence=0.8, region=MAP_REGION) 
+    
+    except: return None 
+
+def try_loot():
+    """Tenta pegar loot com tratamento de erro."""
+    try:
+        loot = pyautogui.locateOnScreen(LOOT_IMG, confidence=0.85)
+        if loot:
+            x, y = pyautogui.center(loot)
+            pyautogui.moveTo(x, y)
+            pyautogui.click(button='right')
+            time.sleep(0.3)
+    except Exception as e:
+        logger.error("Loot nao encontrado")
 
 def run_bot():
-    """Função principal do bot"""
-    logger.info("Bot iniciado. Pressione 'h' para começar...")
+    """Main bot execution loop."""
+    print("Bot está pronto! Pressione 'h' para iniciar...")
     keyboard.wait('h')
     
-    empty_count = 0
-
-    keyboard.on_press_key('c', lambda _: stop_bot() if keyboard.is_pressed('ctrl') else None)
-    
-    while running:
-        battle_empty = check_battle()
-        get_loot()
-
-        if not battle_empty:
-            empty_count = 0
-            is_attacking = check_attack()
-            
-            if not is_attacking:
-                attack()
-                check_status('Health', 1, *POSITION_HEALTH, COLOR_GREEN_HEALTH, 'F3')
-                
-        else:
-            empty_count += 1
-            if empty_count >= 5:
-                logger.info("Battle list vazia, aguardando monstros...")
-                check_status('Mana', 5, *POSITION_MANA, COLOR_MANA, 'F3')
-                empty_count = 0
+    try:
+        with open(f'{FOLDER_NAME}/infos.json', 'r') as file:
+            data = json.loads(file.read())
         
-        time.sleep(0.2)
+        while True:  # Loop principal
+            for item in data:
+                try:
+                    # Execute combat sequence
+                    if check_battle_status():
+                        time.sleep(2)
+                        try_loot()
+                        actions.check_hunger()
+                    
+                    actions.check_status('Health', 1, *POSITION_HEALTH, COLOR_GREEN_HEALTH, 'F3')
+                    time.sleep(1)
+                    
+                    actions.check_status('Mana', 5, *POSITION_MANA, COLOR_MANA, 'F3')
+                    
+                    # Navigation sequence
+                    player_pos = check_player_position()
+                    if player_pos is None:  # Player not found in current position
+                        # We're at the flag, do actions here
+                        check_battle_status()
+                        time.sleep(0.5)
+                        try_loot()
+                        actions.hole_down(item['down_hole'])
+                        actions.hole_up(item['up_hole'], f'{FOLDER_NAME}/anchor_floor2.png', 430, 0)
+                        actions.hole_up(item['up_hole'], f'{FOLDER_NAME}/anchor_floor3.png', 130, 130)
+                        # Move to next flag
+                        go_to_flag(item['path'], item['wait'])
+                    else:
+                        # We're not at the flag yet, move to it
+                        go_to_flag(item['path'], item['wait'])
+                    
+                    time.sleep(0.2)  # Pequeno delay entre iterações
+                    
+                except Exception as e:
+                    logger.error(f"Erro durante execução do item: {str(e)}")
+                    continue  # Continua para o próximo item mesmo se houver erro
+                    
+    except Exception as e:
+        logger.error(f"Erro crítico durante a execução: {str(e)}")
+        raise  # Re-raise o erro após logá-lo
 
-    logger.info("Bot finalizado com sucesso!")
-
-# Inicia o bot
 if __name__ == "__main__":
     try:
+        print("Iniciando bot em 3 segundos...")
+        time.sleep(3)
         run_bot()
+    except KeyboardInterrupt:
+        print("\nBot interrompido pelo usuário")
     except Exception as e:
-        logger.error(f"Erro inesperado: {e}")
-    finally:
-        sys.exit(0)
+        logger.error(f"Erro fatal: {str(e)}")
+        raise
